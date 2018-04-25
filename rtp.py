@@ -46,32 +46,29 @@ def peek(q):
 
 
 class Simulation:
-	def __init__(self, sender, receiver, net_delay, corr_prob, drop_prob):
+	def __init__(self, sender, receiver, net_delay, corr_prob, drop_prob, timeout, attempts):
 		self.sender = sender
 		self.receiver = receiver
 		self.net_delay = net_delay
 		self.corr_prob = corr_prob
 		self.drop_prob = drop_prob
 		self.network_queue = Queue.PriorityQueue()
-		self.connection_established = False
 
 	def push_to_network(self, step, seg):
 		# This shit doesn't work as intended
 		if random.random() >= self.drop_prob:
 			self.network_queue.put((step + self.net_delay, seg))
-		else:
-                        print('I dropped a packet')
 
 	def run(self, n):
-
+		# Three-way handshake
+		self.sender.initialize_connection()
 		for step in range(1, n + 1):
-                        
-                        print('Step {}:'.format(step))
-                        # 1. Step the sender and receiver
-                        self.sender.step()
-                        self.receiver.step()
+			print('Step {}:'.format(step))
 
-                        
+			# 1. Step the sender and receiver
+			self.sender.step()
+			self.receiver.step()
+
 			# 2. Step the network layer
 			if not self.network_queue.empty():
 				(timeout, _) = peek(self.network_queue)
@@ -91,6 +88,7 @@ class Simulation:
 				self.push_to_network(step, self.receiver.output_queue.get())
 
 
+
 def main():
 	parser = argparse.ArgumentParser(
 		description='Simulates transportation layer network traffic.')
@@ -107,7 +105,7 @@ def main():
 						type=float, dest='drop_prob', default=DROP_PROB,
 						help='likelihood of dropped packets (default: {})'.format(DROP_PROB))
 	parser.add_argument('--timeout',
-						type=int, dest='timeout_establish', default=TIMEOUT,
+						type=int, dest='timeout', default=TIMEOUT,
 						help='timeout for sender (default: {})'.format(TIMEOUT))
 	parser.add_argument('--attempts',
 						type=int, dest='attempts', default=ATTEMPTS,
@@ -116,14 +114,14 @@ def main():
 	parser.add_argument('protocol', help='protocol to use [naive|alt|gbn]')
 	args = parser.parse_args()
 	if args.protocol == 'naive':
-		sender, receiver = NaiveSender(args.app_delay, args.timeout_establish, args.attempts), NaiveReceiver()
+		sender, receiver = NaiveSender(args.app_delay, args.timeout, args.attempts), NaiveReceiver()
 	elif args.protocol == 'alt':
-		sender, receiver = AltSender(args.app_delay, args.timeout_establish, args.attempts), AltReceiver()
+		sender, receiver = AltSender(args.app_delay, args.timeout, args.attempts), AltReceiver()
 	elif args.protocol == 'gbn':
-		sender, receiver = GBNSender(args.app_delay, args.timeout_establish, args.attempts), GBNReceiver()
+		sender, receiver = GBNSender(args.app_delay, args.timeout, args.attempts), GBNReceiver()
 	else:
 		raise RuntimeError('Unknown protocol specified: {}'.format(args.protocol))
-	sim = Simulation(sender, receiver, args.net_delay, args.corr_prob, args.drop_prob)
+	sim = Simulation(sender, receiver, args.net_delay, args.corr_prob, args.drop_prob, args.timeout, args.attempts)
 	sim.run(args.steps)
 
 

@@ -31,8 +31,9 @@
 
 from sendrecvbase import BaseSender, BaseReceiver
 from copy import deepcopy
-from itertools import cycle
 import Queue
+import random
+
 
 def peek(q):
 	return q.queue[0]
@@ -46,7 +47,7 @@ def flip(i):
 
 
 class Segment:
-	def __init__(self, msg, dst, seq=None, status=None, SYN=0):
+	def __init__(self, msg, dst, seq=None, status=None, SYN=0, FIN=0):
 		# Sequence bit of the packet
 		self.seq = seq
 		# Status of the packet if it is a confirmation (i.e. 'ACK' or "NAK")
@@ -54,11 +55,12 @@ class Segment:
 		self.msg = msg
 		self.dst = dst
 		self.SYN = SYN
+		self.FIN = FIN
 
 
 class NaiveSender(BaseSender):
-	def __init__(self, app_interval, timeout, attempts):
-		super(NaiveSender, self).__init__(app_interval, timeout, attempts)
+	def __init__(self, app_interval):
+		super(NaiveSender, self).__init__(app_interval)
 
 	def receive_from_app(self, msg):
 		seg = Segment(msg, 'receiver')
@@ -67,7 +69,7 @@ class NaiveSender(BaseSender):
 	def receive_from_network(self, seg):
 		pass  # Nothing to do!
 
-	def on_interrupt():
+	def on_interrupt(self):
 		pass  # Nothing to do!
 
 
@@ -95,27 +97,32 @@ class AltSender(BaseSender):
 		self.is_sending = True
 
 	def receive_from_network(self, seg):
-		# Correct sequence number, ACK received, and message not corrupted
-		if (seg.seq == self.cur_sequence_number) and (seg.status == 'ACK') and (seg.msg != '<CORRUPTED>'):
-			print('ACK on sequence ' + str(seg.seq))
-			self.cur_sequence_number = flip(self.cur_sequence_number)
-			self.is_sending = False
-			self.stop_timer()
-		# Premature timeout
-		elif seg.seq != self.cur_sequence_number and seg.status != 'NAK':
-			print('premature timeout')
-		elif seg.msg == '<CORRUPTED>':
-			print('sender received corrupted packet')
-			self.attempt_send_packet()
-		# Resend required
+		# Final part of 3 way handshake
+		if seg.SYN == 1 or seg.FIN == 1 or self.closing_state == 'FIN_WAIT_2':
+			self.connection_management(seg)
 		else:
-			print('resending because NAK')
-			self.attempt_send_packet()
+			# Correct sequence number, ACK received, and message not corrupted
+			if (seg.seq == self.cur_sequence_number) and (seg.status == 'ACK') and (seg.msg != '<CORRUPTED>'):
+				print('ACK on sequence ' + str(seg.seq))
+				self.cur_sequence_number = flip(self.cur_sequence_number)
+				self.is_sending = False
+				self.stop_timer()
+			# Premature timeout
+			elif seg.seq != self.cur_sequence_number and seg.status != 'NAK':
+				print('premature timeout')
+			elif seg.msg == '<CORRUPTED>':
+				print('sender received corrupted packet')
+				self.attempt_send_packet()
+			# Resend required
+			else:
+				print('resending because NAK')
+				self.attempt_send_packet()
 
 	# Checks for next message and sends it, as well as starting the timeout timer
 	def attempt_send_packet(self):
 		temp_message = deepcopy(self.cur_message)
-		print('attempting to send packet with sequence ' + str(self.cur_message.seq) + ' and message ' + self.cur_message.msg)
+		print('attempting to send packet with sequence ' + str(
+			self.cur_message.seq) + ' and message ' + self.cur_message.msg)
 		self.send_to_network(temp_message)
 		self.start_timer(self.timeout)
 
@@ -134,28 +141,29 @@ class AltReceiver(BaseReceiver):
 		self.cur_sequence_number = 0
 
 	def receive_from_client(self, seg):
-		if (seg.msg != '<CORRUPTED>') and (seg.seq == self.cur_sequence_number):
-			print('received packet with sequence ' + str(seg.seq))
-			self.send_to_app(seg.msg)
-			seg = Segment('foo', 'sender', seg.seq, 'ACK')
-			self.send_to_network(seg)
-			self.cur_sequence_number = flip(self.cur_sequence_number)
-		# Detected duplicate packet so we resend ACK
-		elif (seg.msg != '<CORRUPTED>') and (seg.seq != self.cur_sequence_number):
-			print('received duplicate packet with sequence ' + str(seg.seq))
-			seg = Segment('foo', 'sender', seg.seq, 'ACK')
-			self.send_to_network(seg)
-		elif seg.msg == '<CORRUPTED>':
-			print('receiver received corrupted packet')
-			seg = Segment('foo', 'sender', 0, 'NAK')
-			self.send_to_network(seg)
+		if seg.SYN == 1 or seg.FIN == 1 or self.closing_state == 'FIN_WAIT_2':
+			self.connection_management(seg)
+		else:
+			if (seg.msg != '<CORRUPTED>') and (seg.seq == self.cur_sequence_number):
+				print('received packet with sequence ' + str(seg.seq))
+				self.send_to_app(seg.msg)
+				seg = Segment('foo', 'sender', seg.seq, 'ACK')
+				self.cur_sequence_number = flip(self.cur_sequence_number)
+			# Detected duplicate packet so we resend ACK
+			elif (seg.msg != '<CORRUPTED>') and (seg.seq != self.cur_sequence_number):
+				print('received duplicate packet with sequence ' + str(seg.seq))
+				seg = Segment('foo', 'sender', seg.seq, 'ACK')
+			elif seg.msg == '<CORRUPTED>':
+				print('receiver received corrupted packet')
+				seg = Segment('foo', 'sender', 0, 'NAK')
+		self.send_to_network(seg)
 
 
 class GBNSender(BaseSender):
 	def __init__(self, app_interval, timeout, attempts):
 		super(GBNSender, self).__init__(app_interval, timeout, attempts)
-		self.oldest_seq = 0
-		self.next_seq_number = 1
+		self.oldest_seq = self.initial_sequence
+		self.next_seq_number = self.initial_sequence + 1
 		self.max_packets_in_pipe = 3
 		self.packets_sending = Queue.Queue()
 
@@ -170,16 +178,19 @@ class GBNSender(BaseSender):
 		self.send_to_network(deepcopy(seg))
 
 	def receive_from_network(self, seg):
-                if seg.seq == self.oldest_seq:
-                        print('Sender received ACK for sequence number ' + str(seg.seq))
-		elif (seg.msg != '<CORRUPTED>') and (seg.status == 'ACK'):
-			print('Sender received ACK for sequence number ' + str(seg.seq))
-			self.oldest_seq = seg.seq
-			# Remove all packets from the window that have been ACK'd
-			while not self.packets_sending.empty() and peek(self.packets_sending).seq <= seg.seq:
-				self.packets_sending.get()
-			self.start_timer(self.timeout)
-                        
+		if seg.SYN == 1 or seg.FIN == 1 or self.closing_state == 'FIN_WAIT_2':
+			print('Sender has connection management request')
+			self.connection_management(seg)
+		else:
+			if seg.seq == self.oldest_seq:
+				print('Sender received ACK for sequence number ' + str(seg.seq))
+			elif (seg.msg != '<CORRUPTED>') and (seg.status == 'ACK'):
+				print('Sender received ACK for sequence number ' + str(seg.seq))
+				self.oldest_seq = seg.seq
+				# Remove all packets from the window that have been ACK'd
+				while not self.packets_sending.empty() and peek(self.packets_sending).seq <= seg.seq:
+					self.packets_sending.get()
+				self.start_timer(self.timeout)
 
 	def on_interrupt(self):
 		print('Sender timeout; resending all packets')
@@ -190,20 +201,33 @@ class GBNSender(BaseSender):
 	def check_sending(self):
 		return self.packets_sending.qsize() == self.max_packets_in_pipe
 
+	def update_initial_sequence(self):
+		self.oldest_seq = self.initial_sequence
+		self.next_seq_number = self.initial_sequence + 1
+
 
 class GBNReceiver(BaseReceiver):
 	def __init__(self):
 		super(GBNReceiver, self).__init__()
-		self.last_sequence_received = 0
+		self.last_sequence_received = self.initial_sequence
 
 	def receive_from_client(self, seg):
-		if seg.seq == (self.last_sequence_received + 1) and seg.msg != '<CORRUPTED>':
-			print('Receiver received sequence number ' + str(seg.seq) +'. Sending ACK...')
-			self.last_sequence_received = seg.seq
-			response = Segment('foo', 'sender', seg.seq, 'ACK')
-			self.send_to_network(response)
-			self.send_to_app(seg.msg)
+		if seg.SYN == 1 or seg.FIN == 1 or self.closing_state == 'FIN_WAIT_2':
+			print('Connection management request received')
+			self.connection_management(seg)
 		else:
-			print('Receiver resending ACK for sequence number ' + str(self.last_sequence_received))
-			response = Segment('foo', 'sender', self.last_sequence_received, 'ACK')
-			self.send_to_network(response)
+			if seg.seq == (self.last_sequence_received + 1) and seg.msg != '<CORRUPTED>':
+				print('Receiver received sequence number ' + str(seg.seq) + '. Sending ACK...')
+				self.last_sequence_received = seg.seq
+				response = Segment('foo', 'sender', seg.seq, 'ACK')
+				self.send_to_network(response)
+				self.send_to_app(seg.msg)
+			else:
+				print('Bad segment with message {}, sequence {}. Internal sequence is {}'.format(seg.msg, seg.seq, self.last_sequence_received))
+				print('Receiver resending ACK for sequence number ' + str(self.last_sequence_received))
+				response = Segment('foo', 'sender', self.last_sequence_received, 'ACK')
+				self.send_to_network(response)
+
+	def update_initial_sequence(self):
+		self.last_sequence_received = self.initial_sequence
+
