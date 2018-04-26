@@ -41,10 +41,18 @@ class BaseSender(object):
 		self.connection_attempts_counter = 0
 		self.closing_timer_enabled = False
 		self.closing_timer = 0
-		self.closing_timer_interval = 30
+		self.closing_interval = 30
 		self.closing_state = None
 		self.initial_sequence = 0
 		self.client_isn = 0
+		self.blocking = True
+		self.closing = False
+
+	def allow_app_messages(self):
+		self.blocking = False
+
+	def disallow_app_messages(self):
+		self.blocking = True
 
 	def send_to_network(self, seg):
 		self.output_queue.put(seg)
@@ -52,7 +60,7 @@ class BaseSender(object):
 	def step(self):
 		self.app_timer += 1
 		if self.connection_established:
-			if self.app_timer >= self.app_interval and not self.check_sending():
+			if self.app_timer >= self.app_interval and not self.blocking:
 				self.app_count += 1
 				self.receive_from_app('message {}'.format(self.app_count))
 				self.app_timer = 0
@@ -61,22 +69,22 @@ class BaseSender(object):
 		if self.custom_enabled:
 			self.custom_timer += 1
 			if self.custom_timer >= self.custom_interval:
+				self.custom_enabled = False
 				self.on_interrupt()
 				self.custom_timer = 0
-				self.custom_enabled = False
 		if self.connection_timer_enabled:
 			self.connection_timer += 1
 			if self.connection_timer >= self.connection_interval:
-				print('Connection timeout on attempt {}'.format(self.connection_attempts_counter))
+				self.connection_timer_enabled = False
 				self.connection_interrupt()
 				self.connection_timer = 0
-				self.connection_timer_enabled = False
 		if self.closing_timer_enabled:
 			self.closing_timer += 1
 			if self.closing_timer >= self.closing_interval:
 				self.connection_established = False
 				self.closing_timer = 0
 				self.closing_timer_enabled = False
+				print('Sender connection closed')
 
 	def start_timer(self, interval):
 		self.custom_enabled = True
@@ -106,9 +114,6 @@ class BaseSender(object):
 		if self.connection_attempts_counter < self.max_attempts:
 			self.initialize_connection()
 
-	def check_sending(self):
-		return False
-
 	def stop_timer(self):
 		self.custom_enabled = False
 
@@ -125,6 +130,10 @@ class BaseSender(object):
 		self.send_to_network(seg)
 
 	def close_connection(self):
+		print('Sender initialized connection close')
+		self.disallow_app_messages()
+		self.closing = True
+		self.stop_timer()
 		self.closing_state = 'FIN_WAIT_1'
 		seg = Segment(None, 'receiver', None, None, None, 1)
 		self.send_to_network(seg)
@@ -138,23 +147,19 @@ class BaseSender(object):
 			print('Connection established with client initial sequence number {}'.format(self.initial_sequence))
 			self.stop_connection_timer()
 			self.update_initial_sequence()
-		elif seg.FIN == 1 or self.closing_state == 'FIN_WAIT_2':
+			self.allow_app_messages()
+		elif seg.FIN == 1 and self.connection_established:
 			if self.closing_state == 'FIN_WAIT_1' and seg.status == 'ACK':
 				self.closing_state = 'FIN_WAIT_2'
 			elif self.closing_state == 'FIN_WAIT_2':
 				seg = Segment(None, 'receiver', None, 'ACK', None, 1)
 				self.send_to_network(seg)
 				self.start_closing_timer()
-			elif self.closing_state is None:
-				seg = Segment(None, 'receiver', None, 'ACK', None, 1)
-				self.send_to_network(seg)
 				self.cleanup()
-			else:
-				self.stop_closing_timer()
-				self.connection_established = False
 
 	def cleanup(self):
 		# What you would call between sending the ACK for the FIN from a client and sending a FIN to the client
+		print('Sender connection closed')
 		seg = Segment(None, 'receiver', None, None, None, 1)
 		self.send_to_network(seg)
 
@@ -171,7 +176,7 @@ class BaseReceiver(object):
 		self.closing_state = None
 		self.closing_timer_enabled = False
 		self.closing_timer = 0
-		self.closing_timer_interval = 30
+		self.closing_interval = 30
 		self.initial_sequence = 0
 
 	def step(self):
@@ -183,6 +188,7 @@ class BaseReceiver(object):
 				self.connection_established = False
 				self.closing_timer = 0
 				self.closing_timer_enabled = False
+				print('Receiver connection closed')
 
 	def send_to_network(self, seg):
 		self.output_queue.put(seg)
@@ -211,25 +217,19 @@ class BaseReceiver(object):
 			seg = Segment('', 'sender', server_isn, self.initial_sequence + 1, 1)
 			self.send_to_network(seg)
 			self.update_initial_sequence()
-		elif seg.FIN == 1 or self.closing_state == 'FIN_WAIT_2':
-			if self.closing_state == 'FIN_WAIT_1' and seg.status == 'ACK':
-				self.closing_state = 'FIN_WAIT_2'
-			elif self.closing_state == 'FIN_WAIT_2':
-				seg = Segment(None, 'sender', None, 'ACK', None, 1)
-				self.send_to_network(seg)
-				self.start_closing_timer()
-			elif self.closing_state is None:
-				seg = Segment(None, 'receiver', None, 'ACK', None, 1)
-				self.send_to_network(seg)
-				self.cleanup()
-			else:
-				self.stop_closing_timer()
-				self.connection_established = False
+			self.connection_established = True
+		elif seg.FIN == 1 and self.connection_established:
+			seg = Segment(None, 'sender', None, 'ACK', None, 1)
+			self.send_to_network(seg)
+			self.cleanup()
+			self.stop_closing_timer()
 
 	def cleanup(self):
 		# What you would call between sending the ACK for the FIN from a client and sending a FIN to the client
+		print('Receiver connection closed')
 		seg = Segment(None, 'sender', None, None, None, 1)
 		self.send_to_network(seg)
+		self.connection_established = False
 
 	def update_initial_sequence(self):
 		pass

@@ -87,6 +87,11 @@ class Simulation:
 			if not self.receiver.output_queue.empty():
 				self.push_to_network(step, self.receiver.output_queue.get())
 
+			if step == n - 15:
+				print(self.sender.connection_established)
+				print(self.receiver.connection_established)
+				self.sender.close_connection()
+
 
 
 def main():
