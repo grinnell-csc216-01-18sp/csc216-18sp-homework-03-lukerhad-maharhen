@@ -87,9 +87,9 @@ class Simulation:
 			if not self.receiver.output_queue.empty():
 				self.push_to_network(step, self.receiver.output_queue.get())
 
+                        # If there are 15 steps remaining in the simulation
+                        # the sender requests to close the connection
 			if step == n - 15:
-				print(self.sender.connection_established)
-				print(self.receiver.connection_established)
 				self.sender.close_connection()
 
 

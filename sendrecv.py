@@ -59,8 +59,8 @@ class Segment:
 
 
 class NaiveSender(BaseSender):
-	def __init__(self, app_interval):
-		super(NaiveSender, self).__init__(app_interval)
+	def __init__(self, app_interval, timeout, attempts):
+		super(NaiveSender, self).__init__(app_interval, timeout, attempts)
 
 	def receive_from_app(self, msg):
 		seg = Segment(msg, 'receiver')
@@ -96,7 +96,6 @@ class AltSender(BaseSender):
 		self.disallow_app_messages()
 
 	def receive_from_network(self, seg):
-		# Final part of 3 way handshake
 		if seg.SYN == 1 or seg.FIN == 1 or self.closing_state == 'FIN_WAIT_2':
 			self.connection_management(seg)
 		else:
@@ -104,7 +103,8 @@ class AltSender(BaseSender):
 			if (seg.seq == self.cur_sequence_number) and (seg.status == 'ACK') and (seg.msg != '<CORRUPTED>'):
 				print('ACK on sequence ' + str(seg.seq))
 				self.cur_sequence_number = flip(self.cur_sequence_number)
-				self.allow_app_messages()
+				if not self.closing:
+                                        self.allow_app_messages()
 				self.stop_timer()
 			# Premature timeout
 			elif seg.seq != self.cur_sequence_number and seg.status != 'NAK':
@@ -119,16 +119,18 @@ class AltSender(BaseSender):
 
 	# Checks for next message and sends it, as well as starting the timeout timer
 	def attempt_send_packet(self):
-		temp_message = deepcopy(self.cur_message)
-		print('attempting to send packet with sequence ' + str(
-			self.cur_message.seq) + ' and message ' + self.cur_message.msg)
-		self.send_to_network(temp_message)
-		self.start_timer(self.timeout)
+                if not self.closing:
+                        temp_message = deepcopy(self.cur_message)
+                        print('attempting to send packet with sequence ' + str(
+                                self.cur_message.seq) + ' and message ' + self.cur_message.msg)
+                        self.send_to_network(temp_message)
+                        self.start_timer(self.timeout)
 
 	def on_interrupt(self):
-		# Resend current packet on timeout
-		print('Timeout occurred, resending')
-		self.attempt_send_packet()
+                if not self.closing:
+                        # Resend current packet on timeout
+                        print('Timeout occurred, resending')
+                        self.attempt_send_packet()
 
 
 class AltReceiver(BaseReceiver):
@@ -152,8 +154,8 @@ class AltReceiver(BaseReceiver):
 			elif seg.msg == '<CORRUPTED>':
 				print('receiver received corrupted packet')
 				seg = Segment('foo', 'sender', 0, 'NAK')
-		self.send_to_network(seg)
-
+			self.send_to_network(seg)
+		
 
 class GBNSender(BaseSender):
 	def __init__(self, app_interval, timeout, attempts):
@@ -172,6 +174,7 @@ class GBNSender(BaseSender):
 		self.packets_sending.put(seg)
 		print('Sender sending sequence number ' + str(seg.seq))
 		self.send_to_network(deepcopy(seg))
+		# If queue is full, disallow app messages
 		if self.packets_sending.qsize() == self.max_packets_in_pipe:
 			self.disallow_app_messages()
 
@@ -196,11 +199,12 @@ class GBNSender(BaseSender):
 				print('Segment messages was {}'.format(seg.msg))
 
 	def on_interrupt(self):
-		print('Sender timeout; resending all packets')
-		for seg in list(self.packets_sending.queue):
-			self.send_to_network(deepcopy(seg))
-		self.stop_timer()
-		self.start_timer(self.timeout)
+                if not self.closing:
+                        print('Sender timeout; resending all packets')
+                        for seg in list(self.packets_sending.queue):
+                                self.send_to_network(deepcopy(seg))
+                        self.stop_timer()
+                        self.start_timer(self.timeout)
 
 	def update_initial_sequence(self):
 		self.oldest_seq = self.initial_sequence

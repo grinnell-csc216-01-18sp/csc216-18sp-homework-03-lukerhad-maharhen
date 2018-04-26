@@ -91,11 +91,13 @@ class BaseSender(object):
 		self.custom_interval = interval
 		self.custom_timer = 0
 
+        # Starts the timeout timer for connection requests
 	def start_connection_timer(self, interval):
 		self.connection_timer_enabled = True
 		self.connection_interval = interval
 		self.connection_timer = 0
 
+        # Starts the timeout timer for closing connection requests
 	def start_closing_timer(self):
 		self.closing_timer_enabled = True
 		self.closing_timer = 0
@@ -109,6 +111,8 @@ class BaseSender(object):
 	def on_interrupt(self):
 		pass
 
+        # Timeout event for connection requests reinitializes connection
+        # until the number of attempts reaches max_attempts
 	def connection_interrupt(self):
 		self.connection_attempts_counter += 1
 		if self.connection_attempts_counter < self.max_attempts:
@@ -123,12 +127,16 @@ class BaseSender(object):
 	def stop_closing_timer(self):
 		self.closing_timer_enabled = False
 
+        # Initializes connection between sender and receiver
+        # Using TCP 3 way handshake
 	def initialize_connection(self):
+                print('sender initializing conneciton')
 		self.start_connection_timer(self.timeout)
 		self.initial_sequence = random.randint(0, 2**32-1)
-		seg = Segment(None, 'receiver', self.initial_sequence, None, 1)
+		seg = Segment('test', 'receiver', self.initial_sequence, None, 1)
 		self.send_to_network(seg)
 
+        # Closes connection between sender and receiver
 	def close_connection(self):
 		print('Sender initialized connection close')
 		self.disallow_app_messages()
@@ -138,13 +146,14 @@ class BaseSender(object):
 		seg = Segment(None, 'receiver', None, None, None, 1)
 		self.send_to_network(seg)
 
+        # Handles any connection status related segments
 	def connection_management(self, seg):
-		if seg.SYN == 1:
+		if seg.SYN == 1 and not self.connection_established:
 			self.connection_established = True
 			client_isn = seg.status - 1
 			# This is where we would keep track of the server_isn outside the context of the simulation
 			self.initial_sequence = client_isn
-			print('Connection established with client initial sequence number {}'.format(self.initial_sequence))
+			print('Connection established with server initial sequence number {}'.format(self.initial_sequence))
 			self.stop_connection_timer()
 			self.update_initial_sequence()
 			self.allow_app_messages()
@@ -156,10 +165,11 @@ class BaseSender(object):
 				self.send_to_network(seg)
 				self.start_closing_timer()
 				self.cleanup()
-
+				
+	# What you would call between sending the ACK for the FIN from a client and sending a FIN to the client			
 	def cleanup(self):
-		# What you would call between sending the ACK for the FIN from a client and sending a FIN to the client
 		print('Sender connection closed')
+		self.connection_established = False
 		seg = Segment(None, 'receiver', None, None, None, 1)
 		self.send_to_network(seg)
 
@@ -203,17 +213,13 @@ class BaseReceiver(object):
 	def stop_closing_timer(self):
 		self.closing_timer_enabled = False
 
-	def close_connection(self):
-		self.closing_state = 'FIN_WAIT_1'
-		seg = Segment(None, 'sender', None, None, None, 1)
-		self.send_to_network(seg)
-
+        # Deals with segments with SYN and FIN flags
 	def connection_management(self, seg):
-		if seg.SYN == 1:
+		if seg.SYN == 1 and not self.connection_established:
 			print('Connection request received')
 			server_isn = random.randint(0, 2 ** 32 - 1)
 			self.initial_sequence = seg.seq
-			print('Connection established with sever initial sequence number {}'.format(self.initial_sequence))
+			print('Connection established with sender initial sequence number {}'.format(self.initial_sequence))
 			seg = Segment('', 'sender', server_isn, self.initial_sequence + 1, 1)
 			self.send_to_network(seg)
 			self.update_initial_sequence()
@@ -224,8 +230,9 @@ class BaseReceiver(object):
 			self.cleanup()
 			self.stop_closing_timer()
 
+        # Where you would deallocate resources between sending the ACK
+        # for the FIN from a client and sending a FIN to the client
 	def cleanup(self):
-		# What you would call between sending the ACK for the FIN from a client and sending a FIN to the client
 		print('Receiver connection closed')
 		seg = Segment(None, 'sender', None, None, None, 1)
 		self.send_to_network(seg)
