@@ -31,6 +31,12 @@ optional arguments:
 
 ## Repository Information
 
-* *(Your names and Grinnell IDs)*
-* *(The version of Python that you used)*
-* *(List of external resources that you consulted)*
+Name: Hadley Luker
+Email: Lukerhad@grinnell.edu
+
+Name: Henry Mahar
+Email: maharhen@grinnell.edu
+
+Python 2.7
+
+We added print statements to clarify what is going on in the simulation.
